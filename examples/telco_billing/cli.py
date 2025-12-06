@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Interactive CLI for testing ContextMesh billing dispute scenarios.
 
-Run the mock server first:
-    python mock_server.py
+Run the mock server first (from excom-context-mesh-mock-server repo):
+    cd ../excom-context-mesh-mock-server
+    poetry run mock-server
 
 Then run this CLI:
-    python cli.py
+    poetry run python examples/telco_billing/cli.py
 """
 
 import json

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Demo of ContextMesh with live FastAPI mock backend.
 
-Run the mock server first:
-    python mock_server.py
+Run the mock server first (from excom-context-mesh-mock-server repo):
+    cd ../excom-context-mesh-mock-server
+    poetry run mock-server
 
 Then run this demo:
-    python demo_with_backend.py
+    poetry run python examples/telco_billing/demo_with_backend.py
 """
 
 import json

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Run test scenarios to demonstrate ContextMesh billing dispute resolution."""
+"""Run test scenarios to demonstrate ContextMesh billing dispute resolution.
+
+Requires the southbound mock server to be running on port 9100:
+    cd ../excom-context-mesh-mock-server
+    poetry run mock-server
+
+Then run the tests:
+    poetry run python examples/telco_billing/test_scenarios.py
+"""
 
 import os
 import time

@@ -1,6 +1,5 @@
-"""Playbook tools for the telco billing CLI.
+"""Playbook tools for loading business rules from local playbook files.
 
-These are framework-level tools for loading business rules from local playbook files.
 Playbooks are not exposed as API endpoints - they are special tools that read from
 the local filesystem.
 """

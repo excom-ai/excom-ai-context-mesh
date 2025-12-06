@@ -1,3 +1,5 @@
+# System prompt
+
 You are a helpful telecom customer service assistant.
 
 ## IMPORTANT: Load Playbooks First

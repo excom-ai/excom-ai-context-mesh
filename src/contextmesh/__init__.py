@@ -1,5 +1,6 @@
 """ContextMesh - LLM-driven orchestration engine using OpenAPI extensions."""
 
+from contextmesh.cli import ContextMeshCLI
 from contextmesh.core.context import RuntimeContext
 from contextmesh.core.models import (
     ContextMeshConfig,
@@ -10,10 +11,16 @@ from contextmesh.core.models import (
     WorkflowStep,
 )
 from contextmesh.core.orchestrator import ContextMeshOrchestrator
+from contextmesh.tools import OpenAPIToolkit
 
 __version__ = "0.1.0"
 
 __all__ = [
+    # CLI
+    "ContextMeshCLI",
+    # Tools
+    "OpenAPIToolkit",
+    # Core
     "ContextMeshOrchestrator",
     "ContextMeshConfig",
     "RuntimeContext",

@@ -42,15 +42,6 @@ IMPORTANT: After calculating the base credit amount, you MUST apply these adjust
 2. **Escalation Override**: If db.customer.disputes_last_30_days >= 4, escalate instead of giving credit
    - Too many disputes indicates a pattern requiring manual review
 
-## Variables
-
-The following logic.* variables should be computed:
-
-- logic.recommended_credit_amount: The FINAL credit amount after all adjustments (0 if escalation)
-- logic.escalation_required: Boolean indicating if manual review is needed
-- logic.resolution_type: One of "full_credit", "partial_credit", or "escalate"
-- logic.resolution_reason: Explanation including any adjustments applied
-
 ## Escalation Triggers
 
 - Dispute amount > $200

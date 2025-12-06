@@ -32,18 +32,6 @@ Handle customer plan upgrade requests, applying appropriate discounts based on l
 - Upgrade effective date is immediate unless customer requests future date
 - Promotional discounts stack with loyalty discounts (max 30% total)
 
-## Variables
-
-The following logic.* variables should be computed:
-
-- logic.loyalty_discount_percent: Discount percentage based on tenure (0, 10, or 20)
-- logic.promotional_discount_percent: Any active promotional discount
-- logic.total_discount_percent: Combined discount (capped at 30)
-- logic.upgrade_approved: Boolean indicating if upgrade can proceed
-- logic.requires_payment: Boolean if outstanding balance blocks upgrade
-- logic.new_monthly_rate: Final monthly rate after discounts
-- logic.upgrade_reason: Explanation of discount applied or rejection reason
-
 ## Rejection Triggers
 
 - Outstanding balance > $100

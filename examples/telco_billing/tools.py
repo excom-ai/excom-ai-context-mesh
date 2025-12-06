@@ -71,8 +71,6 @@ def _create_tool_name(path: str, method: str) -> str:
     """Create a tool name from path and method."""
     # Remove leading slash and convert to snake_case
     name = path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
-    # Handle common prefixes
-    name = name.replace("crm_", "")
     # Add method prefix for non-GET
     if method != "get":
         name = f"{method}_{name}"

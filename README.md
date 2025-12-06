@@ -1,148 +1,144 @@
 # ContextMesh
 
-LLM-driven orchestration engine using OpenAPI extensions and Markdown playbooks.
+**AI-powered business process automation using natural language playbooks.**
 
-## Overview
+ContextMesh connects your business rules to your systems through conversational AI. Define what you want in plain English, and let AI handle the execution.
 
-ContextMesh is an orchestration engine that uses an extended OpenAPI specification to connect:
+## What is ContextMesh?
 
-- Live context from databases and systems
-- Human-readable business logic (Markdown playbooks)
-- Executable API operations
+ContextMesh is a framework for building AI assistants that follow your business rules. Instead of hardcoding logic, you write **playbooks** - simple documents that describe how to handle different scenarios. The AI reads these playbooks and takes action by calling your APIs.
 
-The key idea: we do not build a separate orchestration config language. Instead, we extend OpenAPI so that the same spec that describes your APIs also describes how ContextMesh should use them.
+### The Problem
 
-## Installation
+Traditional automation requires developers to translate business rules into code:
 
-```bash
-pip install contextmesh
-```
+1. Business writes rules in documents
+2. Developers interpret and implement
+3. Changes require code updates and deployments
+4. Business logic gets buried in code
 
-Or for development:
+### The Solution
 
-```bash
-pip install -e ".[dev]"
-```
+With ContextMesh, business rules stay in plain language:
 
-## Quick Start
+1. Business writes playbooks in markdown
+2. AI reads playbooks and follows instructions
+3. Changes are instant - just update the document
+4. Business logic remains readable and auditable
 
-```python
-from contextmesh import ContextMeshOrchestrator, ContextMeshConfig
+## Capabilities
 
-# Configure the orchestrator
-config = ContextMeshConfig(
-    anthropic_api_key="sk-ant-...",
-    openapi_specs_dir="./specs",
-    playbooks_dir="./playbooks",
-)
+### Define Business Rules in Plain English
 
-# Create orchestrator
-orchestrator = ContextMeshOrchestrator(config)
-
-# Execute a workflow
-result = orchestrator.execute_workflow(
-    trigger="billing_dispute_resolution",
-    initial_context={
-        "db": {
-            "customer": {"id": "CUST-123", "churn_risk": "high"},
-            "invoice": {"number": "INV-456", "amount": 150.00},
-        },
-        "input": {"dispute_reason": "Incorrect charge"},
-    }
-)
-
-if result.success:
-    print(f"Workflow completed! Logic values: {result.plan.logic_values}")
-else:
-    print(f"Workflow failed: {result.errors}")
-```
-
-## Key Concepts
-
-### OpenAPI Extensions (`x-contextMesh`)
-
-Add orchestration metadata to your OpenAPI specs:
-
-```yaml
-paths:
-  /billing/adjustments:
-    post:
-      operationId: createBillingAdjustment
-      x-contextMesh:
-        logicModule: billing_resolution
-        templateParams:
-          customerId: "{{db.customer.id}}"
-          amount: "{{logic.recommended_credit_amount}}"
-        stateUpdates:
-          onSuccess:
-            - write:
-                table: adjustment_log
-                values:
-                  adjustment_id: "{{response.adjustmentId}}"
-```
-
-### Markdown Playbooks
-
-Define business logic in human-readable Markdown:
+Write playbooks that describe how to handle customer requests:
 
 ```markdown
-# Logic Module: billing_resolution
+## Billing Dispute Resolution
 
-## Goal
-Resolve billing disputes based on customer profile.
+### Decision Rules
 
-## Steps
-1. Check customer tenure and churn risk
-2. If churn_risk is high and amount < 200: approve full credit
-3. Otherwise: escalate to manual review
+- High churn risk customers get priority treatment
+- Long-tenure customers (>12 months) are eligible for higher credits
+- Disputes over $200 require escalation to a manager
 
-## Variables
-- logic.recommended_credit_amount
-- logic.escalation_required
+### Steps
+
+1. Check customer tenure and payment history
+2. Validate the dispute amount against the invoice
+3. Apply credit based on eligibility rules
+4. Send confirmation to customer
 ```
 
-### Runtime Context
+The AI interprets these rules and makes decisions accordingly.
 
-Access data through namespaced paths:
+### Connect to Any System via APIs
 
-- `db.*` - Database/system data
-- `state.*` - Workflow state
-- `input.*` - User/trigger input
-- `logic.*` - LLM-computed values
-- `response.*` - API response data
+ContextMesh generates tools from your OpenAPI specifications automatically. Add a new API endpoint, and it's immediately available to the AI.
 
-## Running Tests
+Supported operations:
 
-```bash
-# Run all tests
-pytest
+- Customer lookups
+- Invoice retrieval
+- Billing adjustments
+- Case creation
+- Notifications
+- Any REST API you expose
 
-# Run with coverage
-pytest --cov=contextmesh --cov-report=html
+### Maintain Confidentiality
 
-# Run only unit tests
-pytest tests/unit/
+Define what information should never be shared with customers:
 
-# Run integration tests (requires ANTHROPIC_API_KEY)
-ANTHROPIC_API_KEY=sk-ant-... pytest tests/integration/
+- Internal risk scores
+- Revenue metrics (ARPU)
+- Decision thresholds
+- System identifiers
+
+The AI uses this data for decisions but presents customer-friendly explanations.
+
+### Handle Complex Workflows
+
+Multi-step processes that traditionally require complex state machines become simple playbooks:
+
+| Scenario           | Traditional Approach                  | ContextMesh Approach   |
+| ------------------ | ------------------------------------- | ---------------------- |
+| Billing dispute    | State machine + business rules engine | Markdown playbook      |
+| Plan upgrade       | Hardcoded eligibility logic           | Natural language rules |
+| Customer retention | Decision trees in code                | Documented guidelines  |
+
+## Use Cases
+
+### Customer Service Automation
+
+- **Billing disputes**: Automated credit decisions based on customer profile
+- **Plan changes**: Eligibility checks with loyalty discounts
+- **Account inquiries**: Self-service with escalation paths
+
+### Operations Support
+
+- **Incident triage**: Route issues based on severity rules
+- **Approval workflows**: Automated decisions within defined limits
+- **Compliance checks**: Policy enforcement at point of action
+
+### Sales Enablement
+
+- **Pricing decisions**: Discount eligibility based on customer value
+- **Renewal handling**: Retention offers for at-risk accounts
+- **Upsell recommendations**: Contextual suggestions based on usage
+
+## How It Works
+
+```text
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│                  │     │                  │     │                  │
+│    Playbooks     │────▶│   AI Assistant   │────▶│   Your Systems   │
+│  (Business Rules)│     │  (Decision Maker)│     │     (APIs)       │
+│                  │     │                  │     │                  │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
-## Project Structure
+1. **Playbooks** define what the AI should do in each scenario
+2. **AI Assistant** reads playbooks and makes decisions
+3. **Your Systems** execute actions via API calls
 
-```
-contextmesh/
-├── src/contextmesh/
-│   ├── core/           # Context, models, orchestrator
-│   ├── parsers/        # OpenAPI and playbook parsing
-│   ├── templating/     # Template resolution engine
-│   ├── chains/         # LangChain integration
-│   ├── tools/          # OpenAPI to LangChain tools
-│   ├── execution/      # API executor, state management
-│   └── utils/          # Exceptions, utilities
-├── examples/           # Example workflows
-└── tests/              # Unit and integration tests
-```
+## Benefits
 
-## License
+### For Business Teams
 
-MIT
+- Write rules in language you understand
+- Update policies without waiting for development
+- Audit decisions by reading playbooks
+- Test scenarios with real customer data
+
+### For Development Teams
+
+- No more translating business docs to code
+- API-first integration with any system
+- Observability through tool call logging
+- Reduced maintenance burden
+
+### For Operations
+
+- Consistent decision-making across channels
+- Instant policy updates
+- Reduced manual processing
+- Clear escalation paths

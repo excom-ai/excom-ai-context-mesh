@@ -28,25 +28,62 @@ app = FastAPI(
     description="""
 ## Overview
 
-LLM-friendly interface for telco billing operations. This API provides context-rich
-endpoints for customer management, billing adjustments, notifications, and escalations.
+LLM-friendly interface for telco billing operations. This API provides endpoints
+for customer management, billing adjustments, notifications, escalations, and plan upgrades.
 
-## Decision Context
+**Important**: Always fetch actual data from API endpoints. Do not assume values.
 
-When handling billing disputes, consider:
+---
 
-1. **Customer Value**: High ARPU and long tenure customers are more valuable
-2. **Churn Risk**: High-risk customers should be treated with priority
-3. **Dispute History**: Repeat disputes may indicate fraud or chronic issues
-4. **Amount Thresholds**: Large disputes (>$200) typically require escalation
+## Workflow 1: Billing Dispute Resolution
 
-## Recommended Workflow
+Use when a customer disputes a charge on their bill.
 
-1. Fetch customer context via `GET /crm/customers/{id}`
-2. Evaluate eligibility based on tenure, churn_risk, and dispute history
-3. For eligible cases: Create adjustment via `POST /billing/adjustments`
-4. Send notification via `POST /notifications/send`
-5. For ineligible cases: Create escalation via `POST /tickets/create`
+### Steps
+
+1. `GET /crm/customers/{id}` - Fetch customer profile (tenure, churn_risk, dispute history)
+2. Evaluate eligibility using decision rules in endpoint documentation
+3. If eligible: `POST /billing/adjustments` - Issue credit
+4. Always: `POST /notifications/send` - Notify customer
+5. If not eligible: `POST /tickets/create` - Escalate for review
+
+### Key Fields to Check
+
+- `churn_risk`: Determines retention priority
+- `tenure_months`: Affects credit eligibility
+- `disputes_last_30_days`: May trigger escalation
+- `outstanding_balance`: May affect eligibility
+
+---
+
+## Workflow 2: Plan Upgrade
+
+Use when a customer requests to upgrade their service plan.
+
+### Steps
+
+1. `GET /crm/customers/{id}` - Check customer profile and outstanding_balance
+2. `GET /customers/{id}/plan` - Get current plan and payment history
+3. `GET /plans` - Fetch available plans (compare tiers for valid upgrades)
+4. If eligible: `POST /customers/{id}/plan/upgrade` - Process upgrade
+5. Always: `POST /notifications/send` - Send confirmation
+
+### Key Fields to Check
+
+- `outstanding_balance`: May block upgrade
+- `late_payments_last_90_days`: May require escalation
+- `tier`: New plan tier must be higher than current
+
+---
+
+## API Categories
+
+- **CRM**: Customer profiles and context
+- **Billing**: Adjustments (credits/debits)
+- **Invoices**: Customer invoice history and line items
+- **Plans**: Service plans and upgrades
+- **Notifications**: Customer communications
+- **Tickets**: Escalations for manual review
 """,
     version="1.0.0",
 )
@@ -84,7 +121,7 @@ class CustomerResponse(BaseModel):
     tenure_months: int = Field(
         ...,
         description="How long the customer has been with us in months. "
-                    "Longer tenure (>12 months) indicates loyalty and may qualify for higher credits.",
+                    "Longer tenure indicates loyalty - check playbook for specific thresholds.",
         examples=[36, 6, 12],
         ge=0,
     )
@@ -106,7 +143,7 @@ class CustomerResponse(BaseModel):
     outstanding_balance: float = Field(
         ...,
         description="Current unpaid balance on the account in dollars. "
-                    "High balances (>$500) may indicate payment issues.",
+                    "High balances may indicate payment issues - check playbook for thresholds.",
         examples=[50.0, 200.0, 0.0],
         ge=0,
     )
@@ -120,7 +157,7 @@ class CustomerResponse(BaseModel):
     disputes_last_30_days: int = Field(
         default=0,
         description="Number of disputes filed in the last 30 days. "
-                    "4+ disputes should trigger automatic escalation for review.",
+                    "High dispute count may trigger escalation - check playbook for thresholds.",
         examples=[0, 1, 3],
         ge=0,
     )
@@ -148,8 +185,8 @@ class BillingAdjustmentRequest(BaseModel):
     )
     amount: float = Field(
         ...,
-        description="Adjustment amount in dollars. Positive for credits, negative for debits. "
-                    "Auto-approval limits: High churn risk <$200, Long tenure <$100, Others <$50",
+        description="Adjustment amount in dollars. Positive for credits. "
+                    "Check playbook for auto-approval limits based on customer profile.",
         examples=[75.0, 50.0, 25.0],
         gt=0,
     )
@@ -159,7 +196,7 @@ class BillingAdjustmentRequest(BaseModel):
                     "Include: dispute type, customer situation, and justification.",
         examples=[
             "Customer dispute: service outage on 2024-01-15. High churn risk, full credit approved.",
-            "Partial credit for billing error. 50% goodwill adjustment.",
+            "Partial credit for billing error. Goodwill adjustment per playbook rules.",
         ],
         min_length=10,
     )
@@ -259,8 +296,8 @@ class EscalationTicketRequest(BaseModel):
     Request to create an escalation ticket for manual review.
 
     Create escalations when:
-    - Dispute amount > $200
-    - Customer has 4+ disputes in 30 days
+    - Dispute amount exceeds auto-approval threshold (see playbook)
+    - Customer has high dispute count (see playbook)
     - Case requires supervisor approval
     - Fraud suspected
     """
@@ -278,13 +315,13 @@ class EscalationTicketRequest(BaseModel):
     priority: Literal["low", "medium", "high", "urgent"] = Field(
         ...,
         description="Priority level. Use 'high' for high churn risk customers, "
-                    "'urgent' for fraud or large amounts (>$500)",
+                    "'urgent' for fraud or exceptional cases.",
         examples=["high", "medium"],
     )
     subject: str = Field(
         ...,
         description="Brief subject line for the ticket",
-        examples=["Billing dispute requires supervisor approval - $350"],
+        examples=["Billing dispute requires supervisor approval"],
         max_length=100,
     )
     description: str = Field(
@@ -292,8 +329,8 @@ class EscalationTicketRequest(BaseModel):
         description="Detailed description including: customer context, dispute details, "
                     "reason for escalation, and recommended action",
         examples=[
-            "Customer CUST-001 (Alice Johnson) disputes $350 on INV-2024-001. "
-            "High churn risk, 36 month tenure. Amount exceeds auto-approval limit. "
+            "Customer CUST-001 (Alice Johnson) disputes charge on INV-2024-001. "
+            "High churn risk, long tenure. Amount exceeds auto-approval limit. "
             "Recommend full credit to retain customer."
         ],
         min_length=20,
@@ -344,6 +381,239 @@ class HealthResponse(BaseModel):
         description="Status of southbound connection: 'healthy', 'unhealthy', or 'unreachable'"
     )
     version: str = Field(..., description="API version")
+
+
+# =============================================================================
+# Plan Models with Rich Descriptions
+# =============================================================================
+
+class PlanResponse(BaseModel):
+    """
+    Service plan details.
+
+    Plans are tiered from basic (1) to unlimited (4). Higher tiers include
+    more data, minutes, and premium features. Use tier comparison to validate
+    upgrade requests - customers can only upgrade to higher tiers.
+    """
+
+    plan_id: str = Field(
+        ...,
+        description="Unique plan identifier: basic, standard, premium, unlimited",
+        examples=["basic", "standard", "premium", "unlimited"],
+    )
+    name: str = Field(
+        ...,
+        description="Display name of the plan",
+        examples=["Basic", "Standard", "Premium", "Unlimited"],
+    )
+    monthly_rate: float = Field(
+        ...,
+        description="Base monthly rate in dollars before any discounts",
+        examples=[29.99, 49.99, 79.99, 99.99],
+        gt=0,
+    )
+    data_gb: int = Field(
+        ...,
+        description="Monthly data allowance in GB. -1 indicates unlimited data.",
+        examples=[5, 15, 50, -1],
+    )
+    minutes: int = Field(
+        ...,
+        description="Monthly voice minutes. -1 indicates unlimited minutes.",
+        examples=[500, 1000, 2000, -1],
+    )
+    tier: int = Field(
+        ...,
+        description="Plan tier level (1-4). Higher tier = better plan. "
+                    "Upgrades must be to a HIGHER tier. "
+                    "1=Basic, 2=Standard, 3=Premium, 4=Unlimited",
+        examples=[1, 2, 3, 4],
+        ge=1,
+        le=4,
+    )
+
+
+class CustomerPlanResponse(BaseModel):
+    """
+    Customer's current plan assignment with payment history.
+
+    Use this to:
+    - Check if customer is eligible for upgrade
+    - Validate that requested plan is higher tier than current
+    - Check payment history before approving upgrade
+    """
+
+    customer_id: str = Field(
+        ...,
+        description="Customer ID",
+        examples=["CUST-001"],
+    )
+    plan_id: str = Field(
+        ...,
+        description="Current plan ID",
+        examples=["basic", "standard"],
+    )
+    plan_name: str = Field(
+        ...,
+        description="Current plan display name",
+        examples=["Basic", "Standard"],
+    )
+    monthly_rate: float = Field(
+        ...,
+        description="Current monthly rate being charged",
+        examples=[29.99, 49.99],
+    )
+    start_date: str = Field(
+        ...,
+        description="When customer started this plan (ISO 8601)",
+        examples=["2024-01-01T00:00:00Z"],
+    )
+    late_payments_last_90_days: int = Field(
+        default=0,
+        description="Number of late payments in last 90 days. "
+                    "High values may require manager approval - see playbook for thresholds.",
+        examples=[0, 1, 2],
+        ge=0,
+    )
+
+
+class PlanUpgradeRequest(BaseModel):
+    """
+    Request to upgrade a customer's plan.
+
+    Prerequisites:
+    - New plan must be higher tier than current plan
+    - Customer outstanding balance must be within limits (see playbook)
+    - Late payments must be within limits (see playbook for thresholds)
+    """
+
+    new_plan_id: str = Field(
+        ...,
+        description="Target plan ID. Must be higher tier than current. "
+                    "Options: standard, premium, unlimited",
+        examples=["premium", "unlimited"],
+    )
+    effective_date: str | None = Field(
+        default=None,
+        description="When upgrade takes effect (ISO 8601). "
+                    "If null/omitted, upgrade is immediate.",
+        examples=["2024-02-01T00:00:00Z", None],
+    )
+
+
+class InvoiceItemResponse(BaseModel):
+    """Line item on an invoice."""
+
+    description: str = Field(..., description="Description of the charge")
+    amount: float = Field(..., description="Amount for this line item")
+
+
+class InvoiceResponse(BaseModel):
+    """
+    Customer invoice with line item details.
+
+    Use this to understand customer billing history when handling disputes.
+    Look for patterns like recurring overages or disputed charges.
+    """
+
+    invoice_id: str = Field(
+        ...,
+        description="Unique invoice identifier",
+        examples=["INV-CUST-001-006"],
+    )
+    customer_id: str = Field(..., description="Customer this invoice belongs to")
+    invoice_number: str = Field(
+        ...,
+        description="Human-readable invoice number for customer reference",
+        examples=["INV-2024-12345"],
+    )
+    amount: float = Field(
+        ...,
+        description="Total invoice amount in dollars",
+        examples=[29.99, 45.98, 79.99],
+    )
+    due_date: str = Field(
+        ...,
+        description="Payment due date (YYYY-MM-DD format)",
+        examples=["2024-12-20"],
+    )
+    status: str = Field(
+        ...,
+        description="Invoice status: paid, unpaid, overdue, or disputed. "
+                    "Disputed invoices may already have pending adjustments.",
+        examples=["paid", "unpaid", "disputed"],
+    )
+    issued_date: str = Field(
+        ...,
+        description="Date invoice was issued (YYYY-MM-DD format)",
+        examples=["2024-12-06"],
+    )
+    items: list[InvoiceItemResponse] = Field(
+        ...,
+        description="Line items showing breakdown of charges. "
+                    "Check for overage charges or unexpected add-ons.",
+    )
+
+
+class PlanUpgradeResponse(BaseModel):
+    """
+    Result of a plan upgrade request.
+
+    The response includes computed discounts based on tenure.
+    See playbook for specific tenure thresholds and discount percentages.
+    """
+
+    upgrade_id: str = Field(
+        ...,
+        description="Unique upgrade transaction ID (format: UPG-XXXXXXXX)",
+        examples=["UPG-A1B2C3D4"],
+    )
+    customer_id: str = Field(..., description="Customer ID")
+    old_plan_id: str = Field(
+        ...,
+        description="Previous plan ID",
+        examples=["basic"],
+    )
+    new_plan_id: str = Field(
+        ...,
+        description="New plan ID",
+        examples=["premium"],
+    )
+    old_monthly_rate: float = Field(
+        ...,
+        description="Previous monthly rate",
+        examples=[29.99],
+    )
+    new_monthly_rate: float = Field(
+        ...,
+        description="New plan base rate (before discount)",
+        examples=[79.99],
+    )
+    discount_percent: float = Field(
+        ...,
+        description="Loyalty discount applied based on tenure - see playbook for tiers",
+        examples=[0.0, 10.0, 20.0],
+    )
+    final_monthly_rate: float = Field(
+        ...,
+        description="Final rate after loyalty discount applied",
+        examples=[63.99, 71.99, 79.99],
+    )
+    effective_date: str = Field(
+        ...,
+        description="When the upgrade takes effect (ISO 8601)",
+        examples=["2024-01-15T10:30:00Z"],
+    )
+    status: str = Field(
+        ...,
+        description="Upgrade status: 'completed', 'pending', or 'rejected'",
+        examples=["completed"],
+    )
+    created_at: str = Field(
+        ...,
+        description="When upgrade was processed (ISO 8601)",
+        examples=["2024-01-15T10:30:00Z"],
+    )
 
 
 # =============================================================================
@@ -408,30 +678,31 @@ def health_check():
     description="""
 Retrieve complete customer profile including billing context for decision-making.
 
-## Decision Guidelines
+## Key Response Fields
 
-Based on the response, determine eligibility:
+- `churn_risk`: Customer's likelihood to leave ("low", "medium", "high")
+- `tenure_months`: How long they've been a customer
+- `arpu`: Average revenue per user (customer value)
+- `outstanding_balance`: Current unpaid balance
+- `disputes_last_30_days`: Recent dispute count (high = possible fraud pattern)
+- `total_credits_last_30_days`: Recent credits issued
 
-| Condition | Credit Limit | Action |
-|-----------|--------------|--------|
-| churn_risk = "high" AND amount < $200 | Full credit | Auto-approve |
-| tenure_months > 12 AND amount < $100 | Full credit | Auto-approve |
-| tenure_months > 6 AND amount < $50 | 50% credit | Partial approve |
-| disputes_last_30_days >= 4 | $0 | Escalate |
-| amount > $200 | $0 | Escalate |
+## Decision Factors
 
-## Adjustments
+Use these fields to evaluate eligibility:
 
-- If disputes_last_30_days > 0: Reduce credit by 25%
-- If outstanding_balance > $500: Consider escalation
+- **churn_risk**: Higher risk = prioritize retention
+- **tenure_months**: Longer tenure = more trust, higher limits
+- **disputes_last_30_days**: Many recent disputes = escalate for review
+- **outstanding_balance**: High balance = may affect eligibility
 
-## Next Steps
+## Workflow
 
-After fetching customer:
-1. Evaluate eligibility using the guidelines above
-2. If eligible: `POST /billing/adjustments`
-3. Always: `POST /notifications/send`
-4. If not eligible: `POST /tickets/create`
+1. Fetch this endpoint to get customer context
+2. Evaluate eligibility based on playbook rules
+3. If eligible: `POST /billing/adjustments`
+4. Always: `POST /notifications/send`
+5. If not eligible: `POST /tickets/create`
 """,
 )
 def get_customer(customer_id: str):
@@ -451,29 +722,28 @@ Create a billing adjustment to credit or debit a customer's account.
 
 Before calling this endpoint:
 1. Fetch customer via `GET /crm/customers/{id}`
-2. Verify eligibility based on tenure, churn_risk, and dispute history
-3. Calculate appropriate credit amount (apply 25% reduction for repeat disputes)
+2. Evaluate eligibility using playbook rules
+3. Calculate appropriate credit amount based on rules
 
-## Auto-Approval Limits
+## Request Fields
 
-| Customer Profile | Max Auto-Approval |
-|-----------------|-------------------|
-| High churn risk | $200 |
-| Tenure > 12 months | $100 |
-| Tenure 6-12 months | $50 (partial) |
-| Others | Escalate |
+- `customerId`: Customer to adjust
+- `invoiceNumber`: Invoice being adjusted
+- `amount`: Credit/debit amount (use value from eligibility calculation)
+- `reason`: Detailed explanation for audit trail
+- `adjustmentType`: "credit" or "debit"
+
+## Response
+
+Returns confirmation with:
+- `adjustmentId`: Reference number
+- `status`: "applied", "pending", or "rejected"
 
 ## After Creating Adjustment
 
-Always send a notification to confirm:
-```
-POST /notifications/send
-{
-  "customerId": "CUST-001",
-  "templateId": "credit_issued",
-  "templateData": {"amount": 75.0, "invoiceNumber": "INV-001"}
-}
-```
+Send notification using `POST /notifications/send` with:
+- `templateId`: "credit_issued"
+- `templateData`: Include amount and invoice from this response
 """,
 )
 def create_billing_adjustment(request: BillingAdjustmentRequest):
@@ -521,9 +791,9 @@ Create an escalation ticket when a dispute cannot be auto-resolved.
 
 ## When to Escalate
 
-- Dispute amount > $200
-- Customer has 4+ disputes in last 30 days
-- Outstanding balance > $500
+- Dispute amount exceeds auto-approval threshold (see playbook)
+- Customer has excessive disputes in last 30 days (see playbook)
+- Outstanding balance exceeds threshold (see playbook)
 - Fraud indicators present
 - Policy exception required
 
@@ -532,7 +802,7 @@ Create an escalation ticket when a dispute cannot be auto-resolved.
 | Situation | Priority |
 |-----------|----------|
 | Fraud suspected | urgent |
-| Amount > $500 | urgent |
+| Large amount (see playbook) | urgent |
 | High churn risk customer | high |
 | Standard escalation | medium |
 | Information request | low |
@@ -553,6 +823,174 @@ POST /notifications/send
 def create_escalation_ticket(request: EscalationTicketRequest):
     """Create an escalation ticket for manual review."""
     return proxy_post("/tickets/create", request.model_dump())
+
+
+# =============================================================================
+# Plan Endpoints
+# =============================================================================
+
+@app.get(
+    "/plans",
+    response_model=list[PlanResponse],
+    tags=["Plans"],
+    summary="List all available service plans",
+    description="""
+Fetch all available service plans. Use the returned data to determine valid upgrade paths.
+
+## Response Fields
+
+- `plan_id`: Unique identifier for the plan
+- `name`: Display name
+- `monthly_rate`: Base price (before discounts)
+- `data_gb`: Data allowance (-1 = unlimited)
+- `minutes`: Voice minutes (-1 = unlimited)
+- `tier`: Numeric tier level for comparison
+
+## Upgrade Rules
+
+- Upgrades must be to a HIGHER tier (compare `tier` values)
+- Cannot downgrade or move to same tier
+- Loyalty discounts are applied automatically based on customer tenure
+
+## Usage
+
+1. Fetch this list to see available options
+2. Get customer's current plan via `GET /customers/{id}/plan`
+3. Filter to plans where `tier` > customer's current tier
+4. Process via `POST /customers/{id}/plan/upgrade`
+""",
+)
+def list_plans():
+    """List all available service plans."""
+    return proxy_get("/plans")
+
+
+@app.get(
+    "/plans/{plan_id}",
+    response_model=PlanResponse,
+    tags=["Plans"],
+    summary="Get plan details",
+    description="""
+Get details for a specific plan.
+
+Use this to validate that a target plan exists and check its tier
+before processing an upgrade request.
+""",
+)
+def get_plan(plan_id: str):
+    """Get details for a specific plan."""
+    return proxy_get(f"/plans/{plan_id}")
+
+
+@app.get(
+    "/customers/{customer_id}/plan",
+    response_model=CustomerPlanResponse,
+    tags=["Plans"],
+    summary="Get customer's current plan",
+    description="""
+Get the customer's current plan assignment and payment history.
+
+## Decision Context
+
+Use this before processing upgrade to check:
+
+| Field | Check | Action |
+|-------|-------|--------|
+| plan_id | Compare tier with target | Must upgrade to higher tier |
+| late_payments_last_90_days | Above threshold | Escalate (see playbook) |
+| late_payments_last_90_days | Within threshold | Proceed with upgrade |
+
+## Workflow
+
+1. Fetch current plan to get tier and payment history
+2. Fetch customer profile for outstanding_balance check
+3. Check outstanding_balance against playbook threshold
+4. Check late_payments against playbook threshold
+5. If eligible: Process upgrade via `POST /customers/{id}/plan/upgrade`
+""",
+)
+def get_customer_plan(customer_id: str):
+    """Get customer's current plan assignment."""
+    return proxy_get(f"/customers/{customer_id}/plan")
+
+
+@app.get(
+    "/customers/{customer_id}/invoices",
+    response_model=list[InvoiceResponse],
+    tags=["Invoices"],
+    summary="Get customer invoices",
+    description="""
+Get all invoices for a customer, including line item details.
+
+## When to Use
+
+- Review billing history when handling disputes
+- Identify specific invoices with disputed charges
+- Check for patterns of overages or add-on charges
+
+## Response Fields
+
+- `invoice_id`: Unique identifier for the invoice
+- `invoice_number`: Human-readable invoice number (use this when referencing invoices)
+- `amount`: Total invoice amount
+- `status`: paid, unpaid, overdue, or disputed
+- `items`: Line items showing charge breakdown
+
+## Workflow Integration
+
+1. Fetch invoices to understand billing history
+2. Identify the disputed invoice by number
+3. Check status and line items for dispute details
+4. Use invoice_number when creating adjustments
+""",
+)
+def get_customer_invoices(customer_id: str):
+    """Get customer's invoice history."""
+    return proxy_get(f"/customers/{customer_id}/invoices")
+
+
+@app.post(
+    "/customers/{customer_id}/plan/upgrade",
+    response_model=PlanUpgradeResponse,
+    tags=["Plans"],
+    summary="Upgrade customer's plan",
+    description="""
+Process a plan upgrade for a customer.
+
+## Prerequisites
+
+Before calling this endpoint:
+
+1. Fetch customer profile: `GET /crm/customers/{id}`
+   - Check `outstanding_balance` field
+2. Fetch current plan: `GET /customers/{id}/plan`
+   - Check `late_payments_last_90_days` field
+3. Fetch target plan: `GET /plans/{plan_id}`
+   - Verify target `tier` > current `tier`
+
+## Eligibility Rules
+
+- High `outstanding_balance`: May block upgrade (require payment first)
+- High `late_payments_last_90_days`: May require escalation
+- Target tier must be HIGHER than current tier
+
+## Response Fields
+
+The response includes:
+- `discount_percent`: Loyalty discount applied (based on customer tenure)
+- `final_monthly_rate`: Actual rate after discount
+- `status`: Whether upgrade succeeded
+
+## After Upgrade
+
+Send confirmation notification using `POST /notifications/send` with:
+- `templateId`: "plan_upgraded"
+- `templateData`: Include old/new plan names and final rate from response
+""",
+)
+def upgrade_customer_plan(customer_id: str, request: PlanUpgradeRequest):
+    """Process a plan upgrade for a customer."""
+    return proxy_post(f"/customers/{customer_id}/plan/upgrade", request.model_dump())
 
 
 # =============================================================================
@@ -601,6 +1039,18 @@ def reset_all():
     return proxy_post("/debug/reset", {})
 
 
+@app.get("/debug/upgrades", tags=["Debug"], summary="List all plan upgrades")
+def list_upgrades():
+    """List all plan upgrades for debugging."""
+    return proxy_get("/debug/upgrades")
+
+
+@app.get("/debug/customer-plans", tags=["Debug"], summary="List all customer plan assignments")
+def list_customer_plans():
+    """List all customer plan assignments for debugging."""
+    return proxy_get("/debug/customer-plans")
+
+
 @app.post("/debug/reset-all", tags=["Debug"], summary="Reset everything to defaults")
 def reset_everything():
     """Reset everything to defaults."""
@@ -626,6 +1076,13 @@ if __name__ == "__main__":
     print("  POST /billing/adjustments        - Create credit/debit")
     print("  POST /notifications/send         - Send notification")
     print("  POST /tickets/create             - Create escalation")
+    print("\nPlans:")
+    print("  GET  /plans                      - List all plans")
+    print("  GET  /plans/{planId}             - Get plan details")
+    print("  GET  /customers/{id}/plan        - Get customer's plan")
+    print("  POST /customers/{id}/plan/upgrade - Upgrade plan")
+    print("\nInvoices:")
+    print("  GET  /customers/{id}/invoices    - Get customer invoices")
     print()
 
     uvicorn.run(app, host="0.0.0.0", port=NORTHBOUND_PORT)

@@ -20,8 +20,10 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from contextmesh import ContextMeshConfig, ContextMeshOrchestrator
+from contextmesh.parsers.playbook_parser import PlaybookParser
 
 BACKEND_URL = "http://localhost:9100"
+NORTHBOUND_URL = "http://localhost:8052"
 
 # Load environment variables
 load_dotenv()
@@ -36,29 +38,110 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
-# System prompt for the chat AI
-CHAT_SYSTEM_PROMPT = """You are a helpful billing dispute assistant for a telecom company.
-You help customers file and process billing disputes.
 
-When a customer describes their issue, extract the following information:
-1. Customer name
-2. How long they've been a customer (tenure in months) - ask if not provided
-3. The invoice number or approximate date
-4. The amount they're disputing
-5. The reason for the dispute
+def build_dynamic_system_prompt(playbooks_dir: Path) -> str:
+    """Build system prompt dynamically from playbooks and OpenAPI spec."""
 
-Once you have enough information, you will create a dispute case.
+    # Load playbooks
+    parser = PlaybookParser()
+    playbooks = []
+    for playbook_file in playbooks_dir.glob("*.md"):
+        try:
+            playbook = parser.load_playbook(playbook_file)
+            playbooks.append(playbook)
+        except Exception:
+            pass
 
-IMPORTANT: When you have gathered enough information to create a dispute, respond with a JSON block
-in the following format (use ```json code fence):
+    # Fetch OpenAPI description from northbound server
+    api_description = ""
+    try:
+        response = httpx.get(f"{NORTHBOUND_URL}/openapi.json", timeout=2.0)
+        if response.status_code == 200:
+            spec = response.json()
+            api_description = spec.get("info", {}).get("description", "")
+    except Exception:
+        pass
 
+    # Fetch available plans from backend
+    plans_info = ""
+    try:
+        response = httpx.get(f"{BACKEND_URL}/plans", timeout=2.0)
+        if response.status_code == 200:
+            plans = response.json()
+            plans_info = "\n## Available Plans\n\n"
+            plans_info += "| Plan | Monthly Rate | Data | Minutes | Tier |\n"
+            plans_info += "|------|-------------|------|---------|------|\n"
+            for plan in plans:
+                data = f"{plan['data_gb']}GB" if plan['data_gb'] > 0 else "Unlimited"
+                mins = str(plan['minutes']) if plan['minutes'] > 0 else "Unlimited"
+                plans_info += f"| {plan['name']} | ${plan['monthly_rate']} | {data} | {mins} | {plan['tier']} |\n"
+            plans_info += "\n**Note:** Customers can only upgrade to a higher tier (not downgrade).\n"
+    except Exception:
+        pass
+
+    # Build workflows section from playbooks
+    workflows_section = ""
+    for pb in playbooks:
+        workflows_section += f"""
+### {pb.module_name.replace('_', ' ').title()}
+**Goal:** {pb.goal}
+"""
+
+    # Build the dynamic prompt
+    prompt = f"""You are a helpful telecom customer service assistant.
+You help customers with various requests including billing disputes and plan changes.
+
+## Available Workflows
+{workflows_section}
+{plans_info}
+## API Context
+{api_description[:1500] if api_description else "API documentation not available."}
+
+## Your Capabilities
+
+Based on the available workflows, you can help customers with:
+"""
+
+    # Add capabilities based on playbooks
+    for pb in playbooks:
+        if "billing" in pb.module_name.lower() or "dispute" in pb.module_name.lower():
+            prompt += """
+- **Billing Disputes**: Help customers file disputes for incorrect charges, service issues, or billing errors
+"""
+        if "upgrade" in pb.module_name.lower() or "plan" in pb.module_name.lower():
+            prompt += """
+- **Plan Upgrades**: Help customers upgrade their service plans with loyalty discounts
+"""
+
+    prompt += """
+## How to Gather Information
+
+**CRITICAL RULE**: When a customer provides their customer ID (like CUST-001, CUST-002):
+- Do NOT ask for name, tenure, or any profile information - it will be looked up automatically
+- Only ask for information specific to their request (disputed amount, invoice, target plan, etc.)
+
+**For Billing Disputes - with customer ID:**
+- Just need: invoice number, disputed amount, and reason for dispute
+
+**For Billing Disputes - without customer ID:**
+- Customer name, tenure (months), invoice, disputed amount, reason
+
+**For Plan Upgrades - with customer ID:**
+- Just need: which plan they want to upgrade to
+
+**For Plan Upgrades - without customer ID:**
+- Customer name, tenure (months), current plan, desired plan
+
+## Creating Cases
+
+When you have enough information, respond with a JSON block (use ```json code fence):
+
+**For Billing Disputes:**
 ```json
 {
   "action": "create_dispute",
   "customer": {
-    "name": "Customer Name",
-    "tenure_months": 12,
-    "churn_risk": "medium"
+    "customer_id": "CUST-001"
   },
   "invoice": {
     "number": "INV-XXXX",
@@ -69,34 +152,59 @@ in the following format (use ```json code fence):
 }
 ```
 
-For churn_risk, estimate based on:
-- "high" if customer seems frustrated, threatens to leave, or mentions competitors
-- "low" if customer is patient and understanding
+**For Plan Upgrades:**
+```json
+{
+  "action": "create_upgrade",
+  "customer": {
+    "customer_id": "CUST-001"
+  },
+  "target_plan": "premium",
+  "upgrade_reason": "Customer wants more data"
+}
+```
+
+Note: If customer provides their ID, you only need to include customer_id in the customer object.
+The system will automatically fetch their name, tenure, churn_risk, and other profile data.
+
+For churn_risk (only if no customer ID): estimate based on customer's tone:
+- "high" if frustrated or threatens to leave
+- "low" if patient and understanding
 - "medium" otherwise
 
-If you need more information, just ask the customer in a friendly way.
 Keep responses concise and helpful.
 """
+    return prompt
 
 
-def print_header():
+# Will be set dynamically at startup
+CHAT_SYSTEM_PROMPT = ""
+
+
+def print_header(workflows: list[str] | None = None):
     """Print welcome header."""
+    workflow_list = ""
+    if workflows:
+        workflow_list = f"\n{BOLD}Available Workflows:{RESET}\n"
+        for wf in workflows:
+            workflow_list += f"  {GREEN}•{RESET} {wf}\n"
+
     print(f"""
 {CYAN}{BOLD}╔══════════════════════════════════════════════════════════════════╗
-║           ContextMesh - Billing Dispute Resolution CLI           ║
+║              ContextMesh - Customer Service CLI                  ║
 ╚══════════════════════════════════════════════════════════════════╝{RESET}
-
-{BOLD}Chat Mode:{RESET} Describe your billing issue in plain English.
-           The AI will help you file a dispute.
+{workflow_list}
+{BOLD}Chat Mode:{RESET} Describe what you need help with.
+           The AI will guide you through the process.
 
 {BOLD}Commands:{RESET}
   {GREEN}/new{RESET}      - Start a new conversation
   {GREEN}/preset{RESET}   - Use a preset scenario
-  {GREEN}/context{RESET}  - Show current dispute context
-  {GREEN}/run{RESET}      - Execute current dispute workflow
+  {GREEN}/context{RESET}  - Show current case context
+  {GREEN}/run{RESET}      - Execute current workflow
   {GREEN}/plan{RESET}     - Show plan without executing
-  {GREEN}/history{RESET}  - Show all dispute history
-  {GREEN}/reset{RESET}    - Clear all dispute history
+  {GREEN}/history{RESET}  - Show all history
+  {GREEN}/reset{RESET}    - Clear all history
   {GREEN}/help{RESET}     - Show this help
   {GREEN}/quit{RESET}     - Exit
 
@@ -183,26 +291,66 @@ def extract_json_from_response(text: str) -> dict | None:
     return None
 
 
+def fetch_customer_profile(customer_id: str) -> dict | None:
+    """Fetch customer profile from the backend."""
+    try:
+        response = httpx.get(f"{BACKEND_URL}/crm/customers/{customer_id}", timeout=5.0)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+
 def build_context_from_chat(data: dict) -> dict:
     """Build a context dictionary from chat-extracted data."""
     customer = data.get("customer", {})
     invoice = data.get("invoice", {})
 
-    # Generate IDs
-    customer_id = f"CUST-{random.randint(1000, 9999)}"
-    case_id = f"CASE-{random.randint(1000, 9999)}"
-    invoice_number = invoice.get("number", f"INV-{random.randint(10000, 99999)}")
-
-    return {
-        "db": {
-            "customer": {
+    # Check if customer_id was provided - if so, fetch from backend
+    customer_id = customer.get("customer_id")
+    if customer_id and customer_id.startswith("CUST-"):
+        print(f"{DIM}Looking up customer {customer_id}...{RESET}")
+        profile = fetch_customer_profile(customer_id)
+        if profile:
+            print(f"{GREEN}✓ Found: {profile.get('name', 'Unknown')}{RESET}")
+            # Use fetched profile data
+            customer_data = {
+                "customer_id": customer_id,
+                "name": profile.get("name", customer.get("name", "Unknown Customer")),
+                "tenure_months": profile.get("tenure_months", customer.get("tenure_months", 12)),
+                "arpu": profile.get("arpu", customer.get("arpu", 75.00)),
+                "churn_risk": profile.get("churn_risk", customer.get("churn_risk", "medium")),
+                "outstanding_balance": profile.get("outstanding_balance", customer.get("outstanding_balance", 0.00)),
+            }
+        else:
+            print(f"{YELLOW}Customer not found, using provided data{RESET}")
+            customer_data = {
                 "customer_id": customer_id,
                 "name": customer.get("name", "Unknown Customer"),
                 "tenure_months": customer.get("tenure_months", 12),
                 "arpu": customer.get("arpu", 75.00),
                 "churn_risk": customer.get("churn_risk", "medium"),
                 "outstanding_balance": customer.get("outstanding_balance", 0.00),
-            },
+            }
+    else:
+        # Generate new customer ID
+        customer_id = f"CUST-{random.randint(1000, 9999)}"
+        customer_data = {
+            "customer_id": customer_id,
+            "name": customer.get("name", "Unknown Customer"),
+            "tenure_months": customer.get("tenure_months", 12),
+            "arpu": customer.get("arpu", 75.00),
+            "churn_risk": customer.get("churn_risk", "medium"),
+            "outstanding_balance": customer.get("outstanding_balance", 0.00),
+        }
+
+    case_id = f"CASE-{random.randint(1000, 9999)}"
+    invoice_number = invoice.get("number", f"INV-{random.randint(10000, 99999)}")
+
+    return {
+        "db": {
+            "customer": customer_data,
             "invoice": {
                 "number": invoice_number,
                 "amount": invoice.get("amount", invoice.get("disputed_amount", 0) * 2),
@@ -210,7 +358,7 @@ def build_context_from_chat(data: dict) -> dict:
             },
         },
         "state": {"case_id": case_id},
-        "input": {"dispute_reason": data.get("dispute_reason", "Billing dispute")},
+        "input": {"dispute_reason": data.get("dispute_reason", data.get("upgrade_reason", "Customer request"))},
     }
 
 
@@ -524,7 +672,7 @@ def reset_history():
 
 def main():
     """Run the interactive CLI."""
-    print_header()
+    global CHAT_SYSTEM_PROMPT
 
     # Check for API key
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -532,11 +680,33 @@ def main():
         print("Run: export ANTHROPIC_API_KEY=your-key-here\n")
         sys.exit(1)
 
+    # Build dynamic system prompt from playbooks and OpenAPI
+    example_dir = Path(__file__).parent
+    playbooks_dir = example_dir / "playbooks"
+
+    # Load playbook names for display
+    parser = PlaybookParser()
+    workflow_names = []
+    for playbook_file in playbooks_dir.glob("*.md"):
+        try:
+            playbook = parser.load_playbook(playbook_file)
+            workflow_names.append(playbook.module_name.replace('_', ' ').title())
+        except Exception:
+            pass
+
+    # Print header with discovered workflows
+    print_header(workflow_names)
+
+    # Build dynamic system prompt
+    print(f"{DIM}Loading workflows from playbooks...{RESET}")
+    CHAT_SYSTEM_PROMPT = build_dynamic_system_prompt(playbooks_dir)
+    print(f"{GREEN}✓ Loaded {len(workflow_names)} workflow(s){RESET}")
+
     # Create orchestrator and AI client
     try:
         orchestrator = create_orchestrator()
         ai_client = create_anthropic_client()
-        print(f"{GREEN}✓ Connected to backend at http://localhost:9100{RESET}")
+        print(f"{GREEN}✓ Connected to backend at {BACKEND_URL}{RESET}")
         print(f"{GREEN}✓ AI assistant ready{RESET}\n")
     except Exception as e:
         print(f"{RED}Error initializing: {e}{RESET}\n")
@@ -546,12 +716,17 @@ def main():
     chat_messages = []
     presets = get_preset_scenarios()
 
-    # Initial greeting
-    print_ai_response(
-        "Hello! I'm here to help you with billing disputes. "
-        "Please describe your issue - for example: 'I was charged $50 for a service I never used' "
-        "or 'My last bill has duplicate charges.'"
-    )
+    # Initial greeting based on available workflows
+    greeting = "Hello! I'm here to help you with "
+    if len(workflow_names) > 1:
+        greeting += ", ".join(workflow_names[:-1]).lower() + f" and {workflow_names[-1].lower()}"
+    elif workflow_names:
+        greeting += workflow_names[0].lower()
+    else:
+        greeting += "your requests"
+    greeting += ". How can I help you today?"
+
+    print_ai_response(greeting)
 
     while True:
         print_prompt()
@@ -573,14 +748,14 @@ def main():
                 break
 
             elif cmd == "help":
-                print_header()
+                print_header(workflow_names)
 
             elif cmd == "new":
                 chat_messages = []
                 current_context = None
                 print(f"\n{GREEN}✓ Started new conversation{RESET}\n")
                 print_ai_response(
-                    "Let's start fresh! Please describe your billing issue."
+                    "Let's start fresh! How can I help you today?"
                 )
 
             elif cmd == "preset":

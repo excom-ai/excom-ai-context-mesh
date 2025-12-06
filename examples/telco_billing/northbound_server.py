@@ -384,6 +384,122 @@ class HealthResponse(BaseModel):
 
 
 # =============================================================================
+# Case Models
+# =============================================================================
+
+class DisputeCaseRequest(BaseModel):
+    """
+    Request to create a billing dispute case.
+
+    This creates a case record for tracking a customer's billing dispute.
+    The case will be processed according to the billing_dispute_resolution playbook.
+    """
+
+    customer_id: str = Field(
+        ...,
+        description="The customer ID (e.g., CUST-001)",
+        examples=["CUST-001"],
+    )
+    invoice_number: str = Field(
+        ...,
+        description="The invoice number being disputed",
+        examples=["INV-2024-001"],
+    )
+    invoice_amount: float = Field(
+        ...,
+        description="The total amount on the invoice",
+        examples=[150.00],
+        gt=0,
+    )
+    disputed_amount: float = Field(
+        ...,
+        description="The amount being disputed (may be full or partial invoice)",
+        examples=[75.00],
+        gt=0,
+    )
+    dispute_reason: str = Field(
+        ...,
+        description="Description of why the customer is disputing the charge",
+        examples=["Charged for service not received", "Duplicate charge on account"],
+        min_length=5,
+    )
+
+
+class DisputeCaseResponse(BaseModel):
+    """Response after creating a dispute case."""
+
+    case_id: str = Field(
+        ...,
+        description="Unique case identifier (format: CASE-XXXXXXXX)",
+        examples=["CASE-A1B2C3D4"],
+    )
+    customer_id: str = Field(..., description="Customer ID")
+    invoice_number: str = Field(..., description="Invoice being disputed")
+    invoice_amount: float = Field(..., description="Total invoice amount")
+    disputed_amount: float = Field(..., description="Amount being disputed")
+    dispute_reason: str = Field(..., description="Reason for dispute")
+    status: str = Field(
+        ...,
+        description="Case status: 'open', 'in_progress', 'resolved', 'closed'",
+        examples=["open"],
+    )
+    created_at: str = Field(
+        ...,
+        description="ISO 8601 timestamp when case was created",
+        examples=["2024-01-15T10:30:00Z"],
+    )
+
+
+class UpgradeCaseRequest(BaseModel):
+    """
+    Request to create a plan upgrade case.
+
+    This creates a case record for tracking a customer's upgrade request.
+    The case will be processed according to the plan_upgrade playbook.
+    """
+
+    customer_id: str = Field(
+        ...,
+        description="The customer ID (e.g., CUST-001)",
+        examples=["CUST-001"],
+    )
+    target_plan: str = Field(
+        ...,
+        description="The plan ID to upgrade to (e.g., premium, unlimited)",
+        examples=["premium", "unlimited"],
+    )
+    upgrade_reason: str = Field(
+        ...,
+        description="Reason for the upgrade request",
+        examples=["Customer wants more data", "Needs unlimited minutes for business"],
+        min_length=5,
+    )
+
+
+class UpgradeCaseResponse(BaseModel):
+    """Response after creating an upgrade case."""
+
+    case_id: str = Field(
+        ...,
+        description="Unique case identifier (format: CASE-XXXXXXXX)",
+        examples=["CASE-A1B2C3D4"],
+    )
+    customer_id: str = Field(..., description="Customer ID")
+    target_plan: str = Field(..., description="Target plan ID")
+    upgrade_reason: str = Field(..., description="Reason for upgrade")
+    status: str = Field(
+        ...,
+        description="Case status: 'open', 'in_progress', 'resolved', 'closed'",
+        examples=["open"],
+    )
+    created_at: str = Field(
+        ...,
+        description="ISO 8601 timestamp when case was created",
+        examples=["2024-01-15T10:30:00Z"],
+    )
+
+
+# =============================================================================
 # Plan Models with Rich Descriptions
 # =============================================================================
 
@@ -991,6 +1107,130 @@ Send confirmation notification using `POST /notifications/send` with:
 def upgrade_customer_plan(customer_id: str, request: PlanUpgradeRequest):
     """Process a plan upgrade for a customer."""
     return proxy_post(f"/customers/{customer_id}/plan/upgrade", request.model_dump())
+
+
+# =============================================================================
+# Case Endpoints
+# =============================================================================
+
+# In-memory storage for cases (in production this would be a database)
+_dispute_cases: dict[str, dict] = {}
+_upgrade_cases: dict[str, dict] = {}
+
+
+def _generate_case_id() -> str:
+    """Generate a unique case ID."""
+    import random
+    import string
+    return "CASE-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+
+@app.post(
+    "/cases/dispute",
+    response_model=DisputeCaseResponse,
+    tags=["Cases"],
+    summary="Create a billing dispute case",
+    description="""
+Create a billing dispute case after gathering all required information.
+
+## Prerequisites
+
+Before calling this endpoint, you should have:
+
+1. Fetched customer profile via `GET /crm/customers/{id}` to get customer details
+2. Fetched customer invoices via `GET /customers/{id}/invoices` to identify the disputed invoice
+3. Loaded the billing_dispute_resolution playbook via playbook tools for business rules
+4. Applied playbook rules to determine eligibility and resolution approach
+
+## Request Fields
+
+- `customer_id`: The customer filing the dispute
+- `invoice_number`: The specific invoice being disputed
+- `invoice_amount`: Total amount on the invoice
+- `disputed_amount`: The portion being disputed (may be partial)
+- `dispute_reason`: Customer's explanation of the issue
+
+## Workflow After Creating Case
+
+1. Use the case_id for tracking
+2. Apply playbook rules to determine resolution
+3. If auto-approve: `POST /billing/adjustments` to issue credit
+4. If escalate: `POST /tickets/create` to escalate
+5. Always: `POST /notifications/send` to notify customer
+""",
+)
+def create_dispute_case(request: DisputeCaseRequest):
+    """Create a billing dispute case."""
+    from datetime import datetime
+
+    case_id = _generate_case_id()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    case = {
+        "case_id": case_id,
+        "customer_id": request.customer_id,
+        "invoice_number": request.invoice_number,
+        "invoice_amount": request.invoice_amount,
+        "disputed_amount": request.disputed_amount,
+        "dispute_reason": request.dispute_reason,
+        "status": "open",
+        "created_at": now,
+    }
+
+    _dispute_cases[case_id] = case
+    return DisputeCaseResponse(**case)
+
+
+@app.post(
+    "/cases/upgrade",
+    response_model=UpgradeCaseResponse,
+    tags=["Cases"],
+    summary="Create a plan upgrade case",
+    description="""
+Create a plan upgrade case after gathering all required information.
+
+## Prerequisites
+
+Before calling this endpoint, you should have:
+
+1. Fetched customer profile via `GET /crm/customers/{id}` to check outstanding_balance
+2. Fetched customer's current plan via `GET /customers/{id}/plan`
+3. Fetched available plans via `GET /plans` to validate target plan exists and is higher tier
+4. Loaded the plan_upgrade playbook via playbook tools for discount rules
+5. Applied playbook rules to determine eligibility and discounts
+
+## Request Fields
+
+- `customer_id`: The customer requesting the upgrade
+- `target_plan`: The plan ID to upgrade to (must be higher tier than current)
+- `upgrade_reason`: Why the customer wants to upgrade
+
+## Workflow After Creating Case
+
+1. Use the case_id for tracking
+2. Apply playbook rules to determine eligibility
+3. If eligible: `POST /customers/{id}/plan/upgrade` to process
+4. Always: `POST /notifications/send` to confirm
+""",
+)
+def create_upgrade_case(request: UpgradeCaseRequest):
+    """Create a plan upgrade case."""
+    from datetime import datetime
+
+    case_id = _generate_case_id()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    case = {
+        "case_id": case_id,
+        "customer_id": request.customer_id,
+        "target_plan": request.target_plan,
+        "upgrade_reason": request.upgrade_reason,
+        "status": "open",
+        "created_at": now,
+    }
+
+    _upgrade_cases[case_id] = case
+    return UpgradeCaseResponse(**case)
 
 
 # =============================================================================

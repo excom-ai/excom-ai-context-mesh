@@ -114,20 +114,28 @@ Based on the available workflows, you can help customers with:
 """
 
     prompt += """
+## Tools Available
+
+You have tools to look up customer information. When a customer provides their ID:
+- Use `get_customer_profile` to fetch their name, tenure, churn risk, etc.
+- Use `get_customer_plan` to fetch their current plan name and rate
+- Use `get_customer_invoices` to see their billing history
+
+**CRITICAL**: When a customer provides their ID, USE THE TOOLS to look up their info.
+Do NOT ask them for information that you can fetch with tools.
+
 ## How to Gather Information
 
-**CRITICAL RULE**: When a customer provides their customer ID (like CUST-001, CUST-002):
-- Do NOT ask for name, tenure, or any profile information - it will be looked up automatically
-- Only ask for information specific to their request (disputed amount, invoice, target plan, etc.)
-
 **For Billing Disputes - with customer ID:**
-- Just need: invoice number, disputed amount, and reason for dispute
+- Use tools to fetch profile, plan, and invoices
+- Then only ask for: which invoice they're disputing and why
 
 **For Billing Disputes - without customer ID:**
 - Customer name, tenure (months), invoice, disputed amount, reason
 
 **For Plan Upgrades - with customer ID:**
-- Just need: which plan they want to upgrade to
+- Use tools to fetch their current plan
+- Then only ask: which plan they want to upgrade to
 
 **For Plan Upgrades - without customer ID:**
 - Customer name, tenure (months), current plan, desired plan
@@ -302,6 +310,17 @@ def fetch_customer_profile(customer_id: str) -> dict | None:
     return None
 
 
+def fetch_customer_plan(customer_id: str) -> dict | None:
+    """Fetch customer's current plan from the backend."""
+    try:
+        response = httpx.get(f"{BACKEND_URL}/customers/{customer_id}/plan", timeout=5.0)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+
 def build_context_from_chat(data: dict) -> dict:
     """Build a context dictionary from chat-extracted data."""
     customer = data.get("customer", {})
@@ -312,8 +331,10 @@ def build_context_from_chat(data: dict) -> dict:
     if customer_id and customer_id.startswith("CUST-"):
         print(f"{DIM}Looking up customer {customer_id}...{RESET}")
         profile = fetch_customer_profile(customer_id)
+        plan_info = fetch_customer_plan(customer_id)
         if profile:
-            print(f"{GREEN}✓ Found: {profile.get('name', 'Unknown')}{RESET}")
+            plan_name = plan_info.get("plan_name", "Unknown") if plan_info else "Unknown"
+            print(f"{GREEN}✓ Found: {profile.get('name', 'Unknown')} (Plan: {plan_name}){RESET}")
             # Use fetched profile data
             customer_data = {
                 "customer_id": customer_id,
@@ -322,6 +343,9 @@ def build_context_from_chat(data: dict) -> dict:
                 "arpu": profile.get("arpu", customer.get("arpu", 75.00)),
                 "churn_risk": profile.get("churn_risk", customer.get("churn_risk", "medium")),
                 "outstanding_balance": profile.get("outstanding_balance", customer.get("outstanding_balance", 0.00)),
+                "current_plan_id": plan_info.get("plan_id") if plan_info else profile.get("current_plan_id", "basic"),
+                "current_plan_name": plan_info.get("plan_name") if plan_info else "Unknown",
+                "current_monthly_rate": plan_info.get("monthly_rate") if plan_info else 0.0,
             }
         else:
             print(f"{YELLOW}Customer not found, using provided data{RESET}")
@@ -362,6 +386,82 @@ def build_context_from_chat(data: dict) -> dict:
     }
 
 
+def get_chat_tools() -> list[dict]:
+    """Return tools available during chat for looking up customer info."""
+    return [
+        {
+            "name": "get_customer_profile",
+            "description": "Fetch a customer's profile including name, tenure, churn risk, outstanding balance, and ARPU. Use this when a customer provides their ID.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {
+                        "type": "string",
+                        "description": "The customer ID (e.g., CUST-001)"
+                    }
+                },
+                "required": ["customer_id"]
+            }
+        },
+        {
+            "name": "get_customer_plan",
+            "description": "Fetch a customer's current plan details including plan name, monthly rate, and payment history.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {
+                        "type": "string",
+                        "description": "The customer ID (e.g., CUST-001)"
+                    }
+                },
+                "required": ["customer_id"]
+            }
+        },
+        {
+            "name": "get_customer_invoices",
+            "description": "Fetch a customer's invoice history including amounts, statuses, and line items.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {
+                        "type": "string",
+                        "description": "The customer ID (e.g., CUST-001)"
+                    }
+                },
+                "required": ["customer_id"]
+            }
+        }
+    ]
+
+
+def execute_chat_tool(tool_name: str, tool_input: dict) -> str:
+    """Execute a chat tool and return the result."""
+    customer_id = tool_input.get("customer_id", "")
+
+    if tool_name == "get_customer_profile":
+        result = fetch_customer_profile(customer_id)
+        if result:
+            return json.dumps(result, indent=2)
+        return f"Customer {customer_id} not found"
+
+    elif tool_name == "get_customer_plan":
+        result = fetch_customer_plan(customer_id)
+        if result:
+            return json.dumps(result, indent=2)
+        return f"Plan info for {customer_id} not found"
+
+    elif tool_name == "get_customer_invoices":
+        try:
+            response = httpx.get(f"{BACKEND_URL}/customers/{customer_id}/invoices", timeout=5.0)
+            if response.status_code == 200:
+                return json.dumps(response.json(), indent=2)
+        except Exception:
+            pass
+        return f"Invoices for {customer_id} not found"
+
+    return f"Unknown tool: {tool_name}"
+
+
 def chat_with_ai(
     client: Anthropic, messages: list, user_input: str, current_context: dict | None = None
 ) -> str:
@@ -370,6 +470,7 @@ def chat_with_ai(
 
     # Build system prompt with context if available
     system_prompt = CHAT_SYSTEM_PROMPT
+
     if current_context:
         customer = current_context["db"]["customer"]
         invoice = current_context["db"]["invoice"]
@@ -390,14 +491,50 @@ If they want to file a NEW dispute, help them with that instead.
 """
         system_prompt = CHAT_SYSTEM_PROMPT + context_info
 
+    # Get available tools for chat
+    tools = get_chat_tools()
+
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         system=system_prompt,
         messages=messages,
+        tools=tools,
     )
 
-    assistant_message = response.content[0].text
+    # Handle tool use loop
+    while response.stop_reason == "tool_use":
+        # Find all tool use blocks
+        tool_uses = [block for block in response.content if block.type == "tool_use"]
+
+        # Execute tools and collect results
+        tool_results = []
+        for tool_use in tool_uses:
+            print(f"{DIM}  → Calling {tool_use.name}({tool_use.input})...{RESET}")
+            result = execute_chat_tool(tool_use.name, tool_use.input)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_use.id,
+                "content": result
+            })
+
+        # Add assistant response (with tool use) and tool results to messages
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+        # Get next response
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+
+    # Extract text from final response
+    text_blocks = [block.text for block in response.content if hasattr(block, "text")]
+    assistant_message = "\n".join(text_blocks)
+
     messages.append({"role": "assistant", "content": assistant_message})
 
     return assistant_message

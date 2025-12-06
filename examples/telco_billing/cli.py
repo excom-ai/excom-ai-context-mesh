@@ -19,7 +19,6 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from playbook_tools import list_playbooks
-from prompts import build_system_prompt
 from tools import get_chat_tools, execute_tool
 
 # Load environment variables
@@ -144,20 +143,20 @@ def main():
         print("Run: export ANTHROPIC_API_KEY=your-key-here\n")
         sys.exit(1)
 
-    # Build dynamic system prompt from playbooks
+    # Load system prompt and playbooks
     example_dir = Path(__file__).parent
     playbooks_dir = example_dir / "playbooks"
+    system_prompt_file = example_dir / "system_prompt.md"
 
-    # Load playbook names for display using playbook_tools
+    # Load system prompt from markdown file
+    system_prompt = system_prompt_file.read_text()
+
+    # Load playbook names for display
     playbooks = list_playbooks(playbooks_dir)
     playbook_names = [pb["name"].replace('_', ' ').title() for pb in playbooks]
 
     # Print header with discovered playbooks
     print_header(playbook_names)
-
-    # Build dynamic system prompt
-    print(f"{DIM}Loading playbooks...{RESET}")
-    system_prompt = build_system_prompt(playbooks_dir)
     print(f"{GREEN}✓ Loaded {len(playbook_names)} playbook(s){RESET}")
 
     # Create AI client

@@ -116,10 +116,14 @@ Based on the available workflows, you can help customers with:
     prompt += """
 ## Tools Available
 
-You have tools to look up customer information:
+**Customer Data Tools:**
 - `get_customer_profile` - Fetch name, tenure, churn risk, outstanding balance, ARPU
 - `get_customer_plan` - Fetch current plan name, monthly rate, payment history
 - `get_customer_invoices` - Fetch invoice history with amounts and statuses
+
+**Business Rules Tools:**
+- `list_playbooks` - List all available business playbooks with their goals
+- `get_playbook` - Load a specific playbook to get detailed business rules, decision criteria, and thresholds
 
 ## CRITICAL: Customer ID is Always Given
 
@@ -127,21 +131,23 @@ The customer ID is always provided at the start of the conversation. Your job is
 1. **Immediately use your tools** to fetch the customer's profile, plan, and invoices
 2. **Greet the customer by name** using the fetched data
 3. **Ask what they need help with** - only ask for information specific to their request
+4. **Once you know their request, use `list_playbooks` and `get_playbook`** to load the relevant business rules
 
 NEVER ask for the customer ID - it's already given.
 NEVER ask for name, tenure, current plan, or account status - USE THE TOOLS to look it up.
+ALWAYS load the relevant playbook before making decisions about eligibility, discounts, or escalations.
 
 ## How to Help Customers
 
 **For Billing Disputes:**
-- Use tools to fetch profile, plan, and invoices first
-- Ask which invoice they're disputing and why
-- The invoices tool shows you all their recent bills
+- Use customer tools to fetch profile, plan, and invoices
+- Use `get_playbook("billing_dispute_resolution")` to get business rules
+- Apply the playbook's decision rules to determine eligibility and credit amount
 
 **For Plan Upgrades:**
-- Use tools to fetch their current plan first
-- Ask which plan they want to upgrade to
-- You already know the available plans from the context above
+- Use customer tools to fetch profile and current plan
+- Use `get_playbook("plan_upgrade")` to get discount rules and eligibility criteria
+- Apply the playbook's tenure-based discounts and balance thresholds
 
 ## Creating Cases
 
@@ -390,7 +396,7 @@ def build_context_from_chat(data: dict) -> dict:
 
 
 def get_chat_tools() -> list[dict]:
-    """Return tools available during chat for looking up customer info."""
+    """Return tools available during chat for looking up customer info and playbooks."""
     return [
         {
             "name": "get_customer_profile",
@@ -433,6 +439,29 @@ def get_chat_tools() -> list[dict]:
                 },
                 "required": ["customer_id"]
             }
+        },
+        {
+            "name": "list_playbooks",
+            "description": "List all available business playbooks with their goals. Use this to find the right playbook for the customer's request.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "get_playbook",
+            "description": "Load a specific business playbook to get detailed rules, steps, decision criteria, and thresholds. Use this after identifying which playbook matches the customer's request.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "playbook_name": {
+                        "type": "string",
+                        "description": "The playbook name (e.g., 'billing_dispute_resolution', 'plan_upgrade')"
+                    }
+                },
+                "required": ["playbook_name"]
+            }
         }
     ]
 
@@ -461,6 +490,40 @@ def execute_chat_tool(tool_name: str, tool_input: dict) -> str:
         except Exception:
             pass
         return f"Invoices for {customer_id} not found"
+
+    elif tool_name == "list_playbooks":
+        # Load all playbooks and return their names and goals
+        example_dir = Path(__file__).parent
+        playbooks_dir = example_dir / "playbooks"
+        parser = PlaybookParser()
+        playbooks_list = []
+        for playbook_file in playbooks_dir.glob("*.md"):
+            try:
+                pb = parser.load_playbook(playbook_file)
+                playbooks_list.append({
+                    "name": pb.module_name,
+                    "goal": pb.goal
+                })
+            except Exception:
+                pass
+        return json.dumps({"playbooks": playbooks_list}, indent=2)
+
+    elif tool_name == "get_playbook":
+        playbook_name = tool_input.get("playbook_name", "")
+        example_dir = Path(__file__).parent
+        playbooks_dir = example_dir / "playbooks"
+        parser = PlaybookParser()
+
+        # Try to find the playbook
+        for playbook_file in playbooks_dir.glob("*.md"):
+            try:
+                pb = parser.load_playbook(playbook_file)
+                if pb.module_name == playbook_name or playbook_file.stem == playbook_name:
+                    # Return the raw markdown content for full business rules
+                    return pb.raw_markdown
+            except Exception:
+                pass
+        return f"Playbook '{playbook_name}' not found. Use list_playbooks to see available options."
 
     return f"Unknown tool: {tool_name}"
 

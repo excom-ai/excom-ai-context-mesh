@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info:
+  title: Test Billing API
+  version: 1.0.0
+
+servers:
+  - url: https://api.test.com/v1
+
+paths:
+  /billing/adjustments:
+    post:
+      summary: Create a billing adjustment
+      operationId: createBillingAdjustment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdjustmentRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdjustmentResponse'
+
+      x-contextMesh:
+        logicModule: test_billing_resolution
+        description: Creates billing adjustments for dispute resolution
+        templateParams:
+          customerId: "{{db.customer.customer_id}}"
+          invoiceNumber: "{{db.invoice.number}}"
+          amount: "{{logic.recommended_credit_amount}}"
+          reason: "Dispute for invoice {{db.invoice.number}}"
+        stateUpdates:
+          onSuccess:
+            - write:
+                table: adjustment_log
+                values:
+                  case_id: "{{state.case_id}}"
+                  adjustment_id: "{{response.adjustmentId}}"
+                  amount: "{{response.amount}}"
+
+  /notifications/send:
+    post:
+      summary: Send notification
+      operationId: sendNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customerId:
+                  type: string
+                message:
+                  type: string
+      responses:
+        '200':
+          description: Notification sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notificationId:
+                    type: string
+                  status:
+                    type: string
+
+      x-contextMesh:
+        logicModule: test_billing_resolution
+        description: Sends resolution notification to customer
+        templateParams:
+          customerId: "{{db.customer.customer_id}}"
+          message: "Your dispute has been resolved: {{logic.resolution_type}}"
+
+components:
+  schemas:
+    AdjustmentRequest:
+      type: object
+      required:
+        - customerId
+        - amount
+      properties:
+        customerId:
+          type: string
+        invoiceNumber:
+          type: string
+        amount:
+          type: number
+        reason:
+          type: string
+
+    AdjustmentResponse:
+      type: object
+      properties:
+        adjustmentId:
+          type: string
+        amount:
+          type: number
+        createdAt:
+          type: string

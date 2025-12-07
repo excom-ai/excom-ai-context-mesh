@@ -151,7 +151,7 @@ class ContextMeshCLI:
 {DIM}Just type your message to chat with the AI assistant.{RESET}
 """)
 
-    def _chat_anthropic(self, user_input: str) -> str:
+    def _chat_anthropic(self, user_input: str, stream: bool = False) -> str:
         """Send message to Anthropic and get response."""
         self.messages.append({"role": "user", "content": user_input})
 
@@ -166,7 +166,7 @@ class ContextMeshCLI:
             tools=tools,
         )
 
-        # Handle tool use loop
+        # Handle tool use loop (non-streaming for tool calls)
         while response.stop_reason == "tool_use":
             tool_uses = [
                 block for block in response.content if block.type == "tool_use"
@@ -195,6 +195,10 @@ class ContextMeshCLI:
                 tools=tools,
             )
 
+        # Stream the final response if requested
+        if stream and response.stop_reason == "end_turn":
+            return self._stream_anthropic_final(tools)
+
         # Extract text from final response
         text_blocks = [
             block.text for block in response.content if hasattr(block, "text")
@@ -205,8 +209,29 @@ class ContextMeshCLI:
 
         return assistant_message
 
-    def _chat_openai(self, user_input: str) -> str:
+    def _stream_anthropic_final(self, tools: list) -> str:
+        """Stream the final Anthropic response (messages already set up)."""
+        print(f"{MAGENTA}Assistant:{RESET} ", end="", flush=True)
+        assistant_message = ""
+        with self.anthropic_client.messages.stream(
+            model=self.model,
+            max_tokens=1024,
+            temperature=0,
+            system=self.system_prompt,
+            messages=self.messages,
+            tools=tools,
+        ) as stream:
+            for text in stream.text_stream:
+                print(text, end="", flush=True)
+                assistant_message += text
+
+        self.messages.append({"role": "assistant", "content": assistant_message})
+        return assistant_message
+
+    def _chat_openai(self, user_input: str, stream: bool = False) -> str:
         """Send message to OpenAI and get response."""
+        import json
+
         self.messages.append({"role": "user", "content": user_input})
 
         tools = self._get_openai_tools()
@@ -223,7 +248,7 @@ class ContextMeshCLI:
 
         message = response.choices[0].message
 
-        # Handle tool calls loop
+        # Handle tool calls loop (non-streaming)
         while message.tool_calls:
             # Add assistant message with tool calls
             self.messages.append({
@@ -241,7 +266,6 @@ class ContextMeshCLI:
 
             # Execute tools and add results
             for tool_call in message.tool_calls:
-                import json
                 tool_input = json.loads(tool_call.function.arguments)
                 print(f"{DIM}  → Calling {tool_call.function.name}({tool_input})...{RESET}")
                 result = self._execute_tool(tool_call.function.name, tool_input)
@@ -262,21 +286,48 @@ class ContextMeshCLI:
             )
             message = response.choices[0].message
 
+        # Stream the final response if requested
+        if stream and not message.tool_calls:
+            return self._stream_openai_final(tools)
+
         assistant_message = message.content or ""
         self.messages.append({"role": "assistant", "content": assistant_message})
 
         return assistant_message
 
-    def _chat(self, user_input: str) -> str:
+    def _stream_openai_final(self, tools: list) -> str:
+        """Stream the final OpenAI response after tool calls are done."""
+        print(f"{MAGENTA}Assistant:{RESET} ", end="", flush=True)
+        openai_messages = [{"role": "system", "content": self.system_prompt}] + self.messages
+
+        stream = self.openai_client.chat.completions.create(
+            model=self.model,
+            temperature=0,
+            messages=openai_messages,
+            tools=tools if tools else None,
+            stream=True,
+        )
+
+        assistant_message = ""
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                text = chunk.choices[0].delta.content
+                print(text, end="", flush=True)
+                assistant_message += text
+
+        self.messages.append({"role": "assistant", "content": assistant_message})
+        return assistant_message
+
+    def _chat(self, user_input: str, stream: bool = False) -> str:
         """Send message to AI and get response."""
         if self.is_openai:
-            return self._chat_openai(user_input)
+            return self._chat_openai(user_input, stream=stream)
         else:
-            return self._chat_anthropic(user_input)
+            return self._chat_anthropic(user_input, stream=stream)
 
     def send(self, user_input: str) -> str:
-        """Send a message and get a response (for programmatic use)."""
-        return self._chat(user_input)
+        """Send a message and get a response (for programmatic use, non-streaming)."""
+        return self._chat(user_input, stream=False)
 
     def run(self):
         """Run the interactive CLI."""
@@ -354,9 +405,9 @@ class ContextMeshCLI:
                     )
 
             else:
-                # Chat with AI
+                # Chat with AI (streaming)
                 try:
-                    response = self._chat(user_input)
-                    print(f"{MAGENTA}Assistant:{RESET} {response}\n")
+                    self._chat(user_input, stream=True)
+                    print("\n")  # Newline after streamed response
                 except Exception as e:
                     print(f"{RED}Error communicating with AI: {e}{RESET}\n")

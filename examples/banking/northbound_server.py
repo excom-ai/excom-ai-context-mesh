@@ -329,10 +329,10 @@ class DisputeResponse(BaseModel):
         description="Dispute status: open, investigating, resolved, denied",
         examples=["open"],
     )
-    provisional_credit: bool = Field(
+    provisional_credit: float = Field(
         ...,
-        description="Whether provisional credit was applied",
-        examples=[True, False],
+        description="Amount of provisional credit applied (0 if none)",
+        examples=[150.00, 0.0],
     )
     created_at: str = Field(
         ...,
@@ -445,15 +445,25 @@ class CreditCardProductResponse(BaseModel):
         ge=300,
         le=850,
     )
+    credit_limit_range: str = Field(
+        default="",
+        description="Credit limit range for the card",
+        examples=["$500 - $5,000", "$25,000 - $100,000"],
+    )
+    tier: int = Field(
+        default=1,
+        description="Card tier (1=basic, 2=premium, 3=elite)",
+        examples=[1, 2, 3],
+    )
     min_tenure_months: int = Field(
-        ...,
+        default=0,
         description="Minimum banking tenure required in months. "
                     "Check customer's tenure_months against this.",
         examples=[6, 12, 24],
         ge=0,
     )
     benefits: list[str] = Field(
-        ...,
+        default_factory=list,
         description="List of card benefits",
         examples=[["No annual fee", "1% cashback"], ["Airport lounge access", "Travel insurance"]],
     )
@@ -791,6 +801,7 @@ def get_account(account_number: str):
     "/accounts/{account_number}/transactions",
     response_model=list[TransactionResponse],
     tags=["Transactions"],
+    operation_id="get_account_transactions",
     summary="Get recent transactions for an account",
     description="""
 Retrieve recent transactions for a bank account.
@@ -858,7 +869,20 @@ Send notification using `POST /notifications` with:
 )
 def create_dispute(request: DisputeRequest):
     """Create a transaction dispute."""
-    return proxy_post("/disputes", request.model_dump())
+    # Map northbound field names to mock server field names
+    payload = {
+        "account_id": request.account_number,
+        "transaction_id": request.transaction_id,
+        "dispute_type": request.dispute_type,
+        "amount": request.amount,
+        "reason": request.description,
+    }
+    response = proxy_post("/disputes", payload)
+    # Map response back to northbound field names
+    if isinstance(response, dict):
+        response["account_number"] = response.pop("account_id", request.account_number)
+        response["description"] = response.pop("reason", request.description)
+    return response
 
 
 @app.get(
@@ -919,7 +943,19 @@ Send notification using `POST /notifications` with:
 )
 def create_credit(request: CreditRequest):
     """Apply a credit to an account."""
-    return proxy_post("/credits", request.model_dump())
+    # Map northbound field names to mock server field names
+    payload = {
+        "account_id": request.account_number,
+        "amount": request.amount,
+        "reason": request.reason,
+    }
+    response = proxy_post("/credits", payload)
+    # Map response back to northbound field names
+    if isinstance(response, dict):
+        response["account_number"] = response.pop("account_id", request.account_number)
+        response["credit_id"] = response.pop("refund_id", response.get("credit_id", ""))
+        response["credit_type"] = request.credit_type
+    return response
 
 
 # =============================================================================
@@ -983,6 +1019,7 @@ def get_credit_card_product(product_id: str):
     "/customers/{customer_id}/credit-cards/apply",
     response_model=CreditCardApplicationResponse,
     tags=["Credit Cards"],
+    operation_id="apply_for_credit_card",
     summary="Apply for a credit card",
     description="""
 Submit a credit card application for a customer.

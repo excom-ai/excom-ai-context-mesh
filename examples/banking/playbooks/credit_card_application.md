@@ -18,17 +18,25 @@ Customer wants to apply for a credit card or upgrade their existing card.
    - Check if customer has existing accounts in good standing
    - Review monthly income and credit factors
 
-3. **Recommend Products**
-   - List available credit card products
+3. **List Available Products**
+   - Fetch all credit card products
+   - Compare requirements against customer profile
+
+4. **Recommend Products**
    - Match customer profile to appropriate tier:
      - **Basic Card**: Entry-level, no annual fee
      - **Premium Card**: Travel rewards, moderate fee
      - **Elite Card**: Premium benefits, higher requirements
+   - Explain benefits and fees of recommended products
 
-4. **Process Application**
-   - Submit application for chosen product
-   - Provide instant decision if available
-   - Explain next steps for pending applications
+5. **Submit Application** (REQUIRED)
+   - Submit the application in the system
+   - You MUST submit the application before telling the customer it's done
+   - Provide the decision to the customer (approved, pending, or declined)
+
+6. **Notify Customer** (REQUIRED)
+   - Send confirmation notification to the customer
+   - Include application status and next steps
 
 ## Product Matching Guidelines
 

@@ -211,7 +211,6 @@ class ContextMeshCLI:
 
     def _stream_anthropic_final(self, tools: list) -> str:
         """Stream the final Anthropic response (messages already set up)."""
-        print(f"{MAGENTA}Assistant:{RESET} ", end="", flush=True)
         assistant_message = ""
         with self.anthropic_client.messages.stream(
             model=self.model,
@@ -297,7 +296,6 @@ class ContextMeshCLI:
 
     def _stream_openai_final(self, tools: list) -> str:
         """Stream the final OpenAI response after tool calls are done."""
-        print(f"{MAGENTA}Assistant:{RESET} ", end="", flush=True)
         openai_messages = [{"role": "system", "content": self.system_prompt}] + self.messages
 
         stream = self.openai_client.chat.completions.create(

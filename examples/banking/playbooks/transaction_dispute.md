@@ -16,7 +16,7 @@ Customer reports an unauthorized charge, duplicate transaction, or fraudulent ac
 
 2. **Review Transaction Details**
    - Get account transactions to locate the disputed transaction
-   - Confirm amount, date, and merchant
+   - Confirm amount, date, and merchant with the customer
 
 3. **Assess Dispute Type**
    - **Unauthorized**: Customer didn't make the transaction
@@ -29,10 +29,19 @@ Customer reports an unauthorized charge, duplicate transaction, or fraudulent ac
    - Larger amounts: Provisional credit within 10 business days
    - Duplicate charges: Immediate credit if confirmed
 
-5. **Create Dispute Record**
-   - Log the dispute with full details
-   - Apply provisional credit if eligible
-   - Notify customer of investigation timeline
+5. **File the Dispute** (REQUIRED)
+   - Create the dispute record in the system
+   - Include: account number, transaction ID (use customer's description if exact ID not found), dispute type, amount, and description
+   - If the transaction isn't visible in recent history, still file the dispute with the information provided
+   - You MUST file the dispute before telling the customer it's done
+
+6. **Apply Provisional Credit** (if eligible)
+   - Apply the credit to the customer's account
+   - Document the reason (e.g., "Provisional credit for dispute")
+
+7. **Notify Customer** (REQUIRED)
+   - Send confirmation notification to the customer
+   - Include dispute reference number and next steps
 
 ## Decision Criteria
 
@@ -58,4 +67,4 @@ Customer reports an unauthorized charge, duplicate transaction, or fraudulent ac
 - Confirm the transaction details with customer
 - Explain the investigation timeline (typically 10-45 days)
 - Provide case reference number
-- Offer to send confirmation via email
+- Confirm notification will be sent via email

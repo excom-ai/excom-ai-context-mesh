@@ -75,7 +75,7 @@ class TestableHotelCLI(ContextMeshCLI):
             playbooks_dir=PLAYBOOKS_DIR,
             system_prompt_file=SYSTEM_PROMPT_FILE,
             title="Hotel Test CLI",
-            model="claude-haiku-4-5-20251001",
+            model="gpt-5.1",
         )
         self.tool_calls: list[ToolCall] = []
 

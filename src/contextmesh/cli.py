@@ -4,6 +4,8 @@
 This CLI connects to an OpenAPI server and uses playbooks to guide
 AI-powered customer service interactions.
 
+Supports both Anthropic (Claude) and OpenAI (GPT) models.
+
 Usage:
     from contextmesh.cli import ContextMeshCLI
 
@@ -11,6 +13,7 @@ Usage:
         openapi_url="http://localhost:8052/openapi.json",
         playbooks_dir=Path("./playbooks"),
         system_prompt_file=Path("./system_prompt.md"),
+        model="gpt-4o",  # or "claude-haiku-4-5-20251001"
     )
     cli.run()
 """
@@ -20,6 +23,7 @@ import sys
 from pathlib import Path
 
 from anthropic import Anthropic
+from openai import OpenAI
 
 from contextmesh.tools import (
     OpenAPIToolkit,
@@ -39,6 +43,12 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
+def _is_openai_model(model: str) -> bool:
+    """Check if the model is an OpenAI model."""
+    openai_prefixes = ("gpt-", "o1-", "o3-", "chatgpt-")
+    return model.startswith(openai_prefixes)
+
+
 class ContextMeshCLI:
     """Interactive CLI for ContextMesh-powered agents."""
 
@@ -53,10 +63,10 @@ class ContextMeshCLI:
         """Initialize the CLI.
 
         Args:
-            openapi_url: URL to the OpenAPI specification (e.g., http://localhost:8052/openapi.json)
+            openapi_url: URL to the OpenAPI specification
             playbooks_dir: Directory containing playbook markdown files
             system_prompt_file: Path to the system prompt markdown file
-            model: Anthropic model to use
+            model: Model to use (claude-* for Anthropic, gpt-* for OpenAI)
             title: Title to display in the CLI header
         """
         self.openapi_url = openapi_url
@@ -64,10 +74,18 @@ class ContextMeshCLI:
         self.system_prompt_file = system_prompt_file
         self.model = model
         self.title = title
+        self.is_openai = _is_openai_model(model)
 
         # Initialize toolkit and client
         self.api_toolkit = OpenAPIToolkit(openapi_url)
-        self.client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+
+        if self.is_openai:
+            self.openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+            self.anthropic_client = None
+        else:
+            self.anthropic_client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+            self.openai_client = None
+
         self.messages: list = []
 
         # Load system prompt
@@ -84,6 +102,21 @@ class ContextMeshCLI:
         api_tools = self.api_toolkit.get_tools()
         playbook_tools = get_playbook_tools()
         return api_tools + playbook_tools
+
+    def _get_openai_tools(self) -> list[dict]:
+        """Convert tools to OpenAI format."""
+        tools = self._get_tools()
+        openai_tools = []
+        for tool in tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                }
+            })
+        return openai_tools
 
     def _execute_tool(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool and return the result."""
@@ -118,13 +151,13 @@ class ContextMeshCLI:
 {DIM}Just type your message to chat with the AI assistant.{RESET}
 """)
 
-    def _chat(self, user_input: str) -> str:
-        """Send message to AI and get response."""
+    def _chat_anthropic(self, user_input: str) -> str:
+        """Send message to Anthropic and get response."""
         self.messages.append({"role": "user", "content": user_input})
 
         tools = self._get_tools()
 
-        response = self.client.messages.create(
+        response = self.anthropic_client.messages.create(
             model=self.model,
             max_tokens=1024,
             temperature=0,
@@ -153,7 +186,7 @@ class ContextMeshCLI:
             self.messages.append({"role": "assistant", "content": response.content})
             self.messages.append({"role": "user", "content": tool_results})
 
-            response = self.client.messages.create(
+            response = self.anthropic_client.messages.create(
                 model=self.model,
                 max_tokens=1024,
                 temperature=0,
@@ -172,13 +205,92 @@ class ContextMeshCLI:
 
         return assistant_message
 
+    def _chat_openai(self, user_input: str) -> str:
+        """Send message to OpenAI and get response."""
+        self.messages.append({"role": "user", "content": user_input})
+
+        tools = self._get_openai_tools()
+
+        # Build messages with system prompt
+        openai_messages = [{"role": "system", "content": self.system_prompt}] + self.messages
+
+        response = self.openai_client.chat.completions.create(
+            model=self.model,
+            temperature=0,
+            messages=openai_messages,
+            tools=tools if tools else None,
+        )
+
+        message = response.choices[0].message
+
+        # Handle tool calls loop
+        while message.tool_calls:
+            # Add assistant message with tool calls
+            self.messages.append({
+                "role": "assistant",
+                "content": message.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                    }
+                    for tc in message.tool_calls
+                ]
+            })
+
+            # Execute tools and add results
+            for tool_call in message.tool_calls:
+                import json
+                tool_input = json.loads(tool_call.function.arguments)
+                print(f"{DIM}  → Calling {tool_call.function.name}({tool_input})...{RESET}")
+                result = self._execute_tool(tool_call.function.name, tool_input)
+
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+            # Get next response
+            openai_messages = [{"role": "system", "content": self.system_prompt}] + self.messages
+            response = self.openai_client.chat.completions.create(
+                model=self.model,
+                temperature=0,
+                messages=openai_messages,
+                tools=tools if tools else None,
+            )
+            message = response.choices[0].message
+
+        assistant_message = message.content or ""
+        self.messages.append({"role": "assistant", "content": assistant_message})
+
+        return assistant_message
+
+    def _chat(self, user_input: str) -> str:
+        """Send message to AI and get response."""
+        if self.is_openai:
+            return self._chat_openai(user_input)
+        else:
+            return self._chat_anthropic(user_input)
+
+    def send(self, user_input: str) -> str:
+        """Send a message and get a response (for programmatic use)."""
+        return self._chat(user_input)
+
     def run(self):
         """Run the interactive CLI."""
         # Check for API key
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print(f"{RED}Error: ANTHROPIC_API_KEY not set{RESET}")
-            print("Run: export ANTHROPIC_API_KEY=your-key-here\n")
-            sys.exit(1)
+        if self.is_openai:
+            if not os.environ.get("OPENAI_API_KEY"):
+                print(f"{RED}Error: OPENAI_API_KEY not set{RESET}")
+                print("Run: export OPENAI_API_KEY=your-key-here\n")
+                sys.exit(1)
+        else:
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                print(f"{RED}Error: ANTHROPIC_API_KEY not set{RESET}")
+                print("Run: export ANTHROPIC_API_KEY=your-key-here\n")
+                sys.exit(1)
 
         # Load playbook names for display
         playbooks = list_playbooks(self.playbooks_dir)
@@ -187,6 +299,7 @@ class ContextMeshCLI:
         # Print header
         self._print_header(playbook_names)
         print(f"{GREEN}✓ Loaded {len(playbook_names)} playbook(s){RESET}")
+        print(f"{GREEN}✓ Using model: {self.model}{RESET}")
         print(f"{GREEN}✓ AI assistant ready{RESET}\n")
 
         # Initial greeting

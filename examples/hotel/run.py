@@ -43,6 +43,7 @@ def main():
         playbooks_dir=PLAYBOOKS_DIR,
         system_prompt_file=SYSTEM_PROMPT_FILE,
         title="Hotel & Travel - Guest Services",
+        model="gpt-5.1",
     )
     cli.run()
 

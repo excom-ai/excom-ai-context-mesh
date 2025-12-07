@@ -127,6 +127,7 @@ class ContextMeshCLI:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1024,
+            temperature=0,
             system=self.system_prompt,
             messages=self.messages,
             tools=tools,
@@ -155,6 +156,7 @@ class ContextMeshCLI:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1024,
+                temperature=0,
                 system=self.system_prompt,
                 messages=self.messages,
                 tools=tools,

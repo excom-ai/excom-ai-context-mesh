@@ -24,8 +24,8 @@ def fetch_openapi_spec(openapi_url: str) -> dict | None:
     return None
 
 
-def _convert_path_params_to_schema(path: str, operation: dict) -> dict:
-    """Convert path parameters to JSON schema properties."""
+def _convert_params_to_schema(path: str, operation: dict) -> dict:
+    """Convert path and query parameters to JSON schema properties."""
     properties = {}
     required = []
 
@@ -35,14 +35,17 @@ def _convert_path_params_to_schema(path: str, operation: dict) -> dict:
     # Get parameter details from operation
     params = operation.get("parameters", [])
     for param in params:
-        if param.get("in") == "path":
+        param_in = param.get("in")
+        # Handle both path and query parameters
+        if param_in in ("path", "query"):
             name = param["name"]
             schema = param.get("schema", {"type": "string"})
             properties[name] = {
                 "type": schema.get("type", "string"),
                 "description": param.get("description", f"The {name} parameter"),
             }
-            if param.get("required", True):
+            # Path params are always required; query params use their required flag
+            if param_in == "path" or param.get("required", False):
                 required.append(name)
 
     # Add any path params not in parameters (fallback)
@@ -87,7 +90,7 @@ def generate_tools_from_openapi(
     paths = spec.get("paths", {})
 
     for path, path_item in paths.items():
-        for method in ["get", "post"]:
+        for method in ["get", "post", "put", "patch", "delete"]:
             if method not in path_item:
                 continue
 
@@ -111,9 +114,9 @@ def generate_tools_from_openapi(
 
             # Build input schema
             if method == "get":
-                input_schema = _convert_path_params_to_schema(path, operation)
+                input_schema = _convert_params_to_schema(path, operation)
             else:
-                # For POST, use request body schema
+                # For POST/PUT/PATCH, use request body schema
                 request_body = operation.get("requestBody", {})
                 content = request_body.get("content", {})
                 json_content = content.get("application/json", {})
@@ -179,21 +182,34 @@ def execute_api_tool(
     path = tool.get("_path", "")
     method = tool.get("_method", "get")
 
-    # Substitute path parameters
+    # Extract path parameters from the path template
+    path_params = re.findall(r"\{(\w+)\}", path)
+
+    # Substitute path parameters in the URL
     url_path = path
     for key, value in params.items():
-        url_path = url_path.replace(f"{{{key}}}", str(value))
+        if key in path_params:
+            url_path = url_path.replace(f"{{{key}}}", str(value))
 
     url = f"{base_url}{url_path}"
 
     try:
         if method == "get":
-            response = httpx.get(url, timeout=5.0)
+            # For GET, pass non-path params as query parameters
+            query_params = {k: v for k, v in params.items() if k not in path_params}
+            response = httpx.get(url, params=query_params, timeout=5.0)
+        elif method == "delete":
+            # For DELETE, no body needed
+            response = httpx.delete(url, timeout=5.0)
         else:
-            # For POST, remove path params from body
-            path_params = re.findall(r"\{(\w+)\}", path)
+            # For POST/PUT/PATCH, remove path params from body
             body = {k: v for k, v in params.items() if k not in path_params}
-            response = httpx.post(url, json=body, timeout=5.0)
+            if method == "put":
+                response = httpx.put(url, json=body, timeout=5.0)
+            elif method == "patch":
+                response = httpx.patch(url, json=body, timeout=5.0)
+            else:
+                response = httpx.post(url, json=body, timeout=5.0)
 
         if response.status_code == 200:
             return json.dumps(response.json(), indent=2)
